@@ -83,7 +83,6 @@ const MATERIALS = {
   VENEER: { label: 'Stone Veneer', unit: 'sq ft', perSqFt: 1 },
 };
 
-// DEFAULT CREW LIST
 const DEFAULT_CREW = [
   { name: 'Manager', role: 'manager', pin: '1234' },
   { name: 'Foreman', role: 'foreman', pin: '1234' },
@@ -274,6 +273,12 @@ export default function MasonTrackPro() {
   const [loginPin, setLoginPin] = useState('');
   const [loginError, setLoginError] = useState('');
 
+  // Flag to know if the initial profile check has completed
+  const [isProfileChecked, setIsProfileChecked] = useState(false);
+  // State to hold the saved profile from localStorage immediately
+  const [savedProfile, setSavedProfile] = useState(null);
+
+
   useEffect(() => {
     const initAuth = async () => { await signInAnonymously(auth); };
     initAuth();
@@ -281,11 +286,32 @@ export default function MasonTrackPro() {
       if (curr) {
         setUser(curr);
         const saved = localStorage.getItem('masonProfile');
-        if (saved) setProfile(JSON.parse(saved));
+        if (saved) {
+             setSavedProfile(JSON.parse(saved));
+        }
+        // Mark the check as complete AFTER attempting to load profile
+        setIsProfileChecked(true); 
       }
     });
     return () => unsubscribe();
   }, []);
+
+  // Effect to apply the saved profile once both Auth and ProfileCheck are complete
+  useEffect(() => {
+    if (isProfileChecked && savedProfile && savedProfile.name) {
+        // Crucial Check: Ensure the saved user still exists in the crew list
+        const exists = crewList.find(c => c.name === savedProfile.name);
+        if (exists) {
+           setProfile(savedProfile);
+        } else {
+           // User was deleted from crew list, force fresh login
+           localStorage.removeItem('masonProfile');
+           setSavedProfile(null);
+           setProfile({ id: '', name: '', role: 'mason', pin: '' });
+        }
+    }
+  }, [isProfileChecked, savedProfile, crewList]);
+
 
   useEffect(() => {
     if (!user) return;
@@ -367,10 +393,20 @@ export default function MasonTrackPro() {
 
   const handleLogin = (e) => {
     e.preventDefault();
-    if (!loginName || !loginPin) return;
+    if (!loginName || !loginPin || crewList.length === 0) {
+        setLoginError("Please wait for data to load.");
+        return;
+    }
 
     const selectedUser = crewList.find(c => c.name === loginName);
-    if (!selectedUser) { setLoginError("User not found."); return; }
+    
+    // CRITICAL: Check if user data is fully loaded and valid
+    if (!selectedUser || !selectedUser.id) { 
+        setLoginError("User data still loading or invalid."); 
+        // Force the app to wait a moment for the Firestore snapshot to complete
+        setTimeout(() => setLoginError("Try again."), 500);
+        return; 
+    }
 
     const validPin = selectedUser.pin || '1234';
     if (validPin !== loginPin) { setLoginError("Incorrect PIN."); return; }
@@ -378,54 +414,33 @@ export default function MasonTrackPro() {
     const userProfile = { id: selectedUser.id, name: selectedUser.name, role: selectedUser.role, pin: validPin };
     localStorage.setItem('masonProfile', JSON.stringify(userProfile));
     setProfile(userProfile);
+    setSavedProfile(userProfile); // Update savedProfile to trigger auto-render
     setLoginPin(''); setLoginError(''); setView('dashboard');
   };
 
   const handleLogout = () => {
     localStorage.removeItem('masonProfile');
-    setProfile({ name: '', role: 'mason' });
+    setProfile({ id: '', name: '', role: 'mason', pin: '' });
+    setSavedProfile(null); 
     setLoginName(''); setLoginPin(''); setView('login');
+    setIsProfileChecked(true); 
   };
 
   // EXPORT FUNCTION
   const exportData = () => {
-    // 1. Filter logs (for manager export we usually want ALL logs)
     const logsToExport = logs;
-
-    if (logsToExport.length === 0) {
-        alert("No logs to export.");
-        return;
-    }
-
-    // 2. Define CSV Header
+    if (logsToExport.length === 0) { alert("No logs to export."); return; }
     const headers = ["Date", "Mason", "Role", "Jobsite", "Material", "Count", "Unit", "Hours", "UPH", "Notes", "Entry Method"];
-    
-    // 3. Convert Logs to CSV Rows
     const rows = logsToExport.map(log => {
         const dateStr = log.date.toISOString().split('T')[0];
         const uph = log.hours > 0 ? (log.count / log.hours).toFixed(1) : 0;
-        // Escape quotes in notes to prevent CSV breakage
         const safeNotes = log.notes ? `"${log.notes.replace(/"/g, '""')}"` : ""; 
-        
         return [
-            dateStr,
-            log.userName,
-            log.userRole,
-            log.jobsite,
-            log.materialLabel,
-            log.count,
-            log.unit,
-            log.hours,
-            uph,
-            safeNotes,
-            log.entryMethod
+            dateStr, log.userName, log.userRole, log.jobsite, log.materialLabel,
+            log.count, log.unit, log.hours, uph, safeNotes, log.entryMethod
         ].join(",");
     });
-
-    // 4. Combine Header + Rows
     const csvContent = [headers.join(","), ...rows].join("\n");
-
-    // 5. Create Blob and Trigger Download
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -465,6 +480,9 @@ export default function MasonTrackPro() {
         
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'crew_members', profile.id), { pin: newPin });
         setMsg("PIN updated successfully!");
+        // Update local storage and profile state immediately
+        setProfile(p => ({...p, pin: newPin})); 
+        localStorage.setItem('masonProfile', JSON.stringify({...profile, pin: newPin}));
         setTimeout(() => setView('dashboard'), 1500);
     };
 
@@ -533,7 +551,6 @@ export default function MasonTrackPro() {
         }
     };
 
-    // RESTORED RESET FUNCTION
     const hardResetCrew = async () => {
         if (!confirm("WARNING: This will delete ALL current crew members and reset to the default list. This cannot be undone.")) return;
         setSubmitting(true);
@@ -619,7 +636,6 @@ export default function MasonTrackPro() {
               </div>
             ))}
           </div>
-          {/* DANGER ZONE */}
           {isCrew && (
               <div className="mt-8 pt-4 border-t border-red-100">
                   <h3 className="text-xs font-bold text-red-600 uppercase mb-2">Danger Zone</h3>
@@ -648,7 +664,6 @@ export default function MasonTrackPro() {
     const [targetWorker, setTargetWorker] = useState(profile.name);
     const [expandedNote, setExpandedNote] = useState(null);
 
-    // Recent filtered logs
     const recentContextLogs = useMemo(() => {
         let filtered = logs;
         if (profile.role === 'mason') filtered = logs.filter(l => l.userName === profile.name);
@@ -722,7 +737,6 @@ export default function MasonTrackPro() {
             <Select label="Jobsite" options={jobList.length > 0 ? jobList.map(j => ({ value: j.name, label: j.name })) : [{value: '', label: 'Loading Jobs...'}]} value={entry.jobsite} onChange={e => setEntry({...entry, jobsite: e.target.value})} />
             <div className="grid grid-cols-2 gap-4"><Select label="Material" options={Object.keys(MATERIALS).map(k => ({ value: k, label: MATERIALS[k].label }))} value={entry.material} onChange={e => setEntry({...entry, material: e.target.value})} /><Input label="Hours" type="number" step="0.5" value={entry.hours} onChange={e => setEntry({...entry, hours: e.target.value})} /></div>
             
-            {/* NOTES INPUT */}
             <div className="mb-3">
                 <label className="text-xs font-semibold text-gray-500 uppercase">Notes (Optional)</label>
                 <textarea className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 bg-white text-sm" rows="2" placeholder="Sick, rain delay, etc." value={entry.notes} onChange={(e) => setEntry({...entry, notes: e.target.value})} />
@@ -744,7 +758,6 @@ export default function MasonTrackPro() {
           </Card>
         </form>
 
-        {/* RECENT LOGS */}
         <div className="mt-8">
             <h3 className="text-sm font-bold text-gray-500 uppercase mb-2">Recent Activity</h3>
             <Card className="overflow-hidden">
@@ -793,17 +806,14 @@ export default function MasonTrackPro() {
     const stats = useMemo(() => {
         const now = new Date();
         
-        // Daily (Today)
         const dailyLogsC = companyLogs.filter(l => l.date.getDate() === now.getDate() && l.date.getMonth() === now.getMonth() && l.date.getFullYear() === now.getFullYear());
         const dailyLogsP = personalLogs.filter(l => l.date.getDate() === now.getDate() && l.date.getMonth() === now.getMonth() && l.date.getFullYear() === now.getFullYear());
 
-        // Weekly (Last 7 Days)
         const weekCutoff = new Date(); 
         weekCutoff.setDate(now.getDate() - 7);
         const weekLogsC = companyLogs.filter(l => l.date >= weekCutoff);
         const weekLogsP = personalLogs.filter(l => l.date >= weekCutoff);
 
-        // 8 Weeks
         const eightWeekCutoff = new Date();
         eightWeekCutoff.setDate(now.getDate() - 56);
         const eightWeekLogsC = companyLogs.filter(l => l.date >= eightWeekCutoff);
@@ -831,13 +841,12 @@ export default function MasonTrackPro() {
             .sort((a, b) => b.units - a.units);
     }, [companyLogs, stats]);
 
-    // Trend Data Generator
     const generateTrendData = (sourceLogs) => {
       const now = new Date();
       const dataPoints = {};
       const seriesKeys = new Set();
       
-      let daysToLookBack = trendMode === 'daily' ? 7 : 56; // 8 weeks for quarterly view
+      let daysToLookBack = trendMode === 'daily' ? 7 : 56; 
       const cutoff = new Date();
       cutoff.setDate(now.getDate() - daysToLookBack);
       
@@ -850,7 +859,6 @@ export default function MasonTrackPro() {
           dataPoints[key] = { label: formatGraphDate(d, false), rawDate: d, _count: {}, _hours: {} };
         }
       } else {
-        // Weekly buckets
         for (let i = 7; i >= 0; i--) {
           const d = new Date(); d.setDate(now.getDate() - (i * 7));
           const weekStart = new Date(d);
@@ -861,7 +869,6 @@ export default function MasonTrackPro() {
       }
 
       trendLogs.forEach(l => {
-        // Determine bucket key
         let key = '';
         if (trendMode === 'daily') {
             key = formatISODate(l.date);
@@ -935,7 +942,6 @@ export default function MasonTrackPro() {
       <div className="space-y-6 animate-fade-in">
         <div className="flex items-center justify-between"><h2 className="text-xl font-bold text-gray-800">Reports</h2><select className="bg-white border rounded px-2 py-1 text-sm" value={filterJob} onChange={(e) => setFilterJob(e.target.value)}><option value="All">All Jobs</option>{jobList.map(j => <option key={j.id} value={j.name}>{j.name}</option>)}</select></div>
         
-        {/* FOREMAN TOGGLE SECTION */}
         {profile.role === 'foreman' && (
             <div className="flex justify-center mb-4">
                 <div className="flex bg-gray-200 p-1 rounded-lg shadow-inner">
@@ -945,32 +951,17 @@ export default function MasonTrackPro() {
             </div>
         )}
 
-        {/* STATS SECTION */}
         <div>
             <div className="text-sm font-bold text-gray-800 mb-2">
                 {profile.role === 'mason' ? 'My Performance' : 
                  profile.role === 'manager' ? 'Company Overview' : 
                  (foremanView === 'personal' ? 'My Performance' : 'Company Overview')}
             </div>
-            
-            <StatRow 
-                title="Today" 
-                data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persDaily : stats.compDaily} 
-                icon={CalendarIcon} 
-            />
-            <StatRow 
-                title="Last 7 Days" 
-                data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persWeek : stats.compWeek} 
-                icon={Clock} 
-            />
-            <StatRow 
-                title="Last 8 Weeks" 
-                data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.pers8W : stats.comp8W} 
-                icon={CalendarDays} 
-            />
+            <StatRow title="Today" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persDaily : stats.compDaily} icon={CalendarIcon} />
+            <StatRow title="Last 7 Days" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persWeek : stats.compWeek} icon={Clock} />
+            <StatRow title="Last 8 Weeks" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.pers8W : stats.comp8W} icon={CalendarDays} />
         </div>
 
-        {/* CREW COMPARISON (Masons Only) */}
         {profile.role === 'mason' && (
             <Card className="bg-slate-800 text-white border-none">
                 <div className="text-xs font-bold text-gray-400 uppercase mb-3">Crew Comparison (UPH)</div>
@@ -982,7 +973,6 @@ export default function MasonTrackPro() {
             </Card>
         )}
 
-        {/* TREND GRAPH */}
         <Card>
           <div className="flex flex-col gap-3 mb-4">
             <div className="flex items-center gap-2 font-bold text-gray-700 text-sm"><TrendingUp size={16}/> Trend</div>
@@ -1008,7 +998,6 @@ export default function MasonTrackPro() {
           <TrendChart data={trendData.data} keys={trendData.keys} />
         </Card>
 
-        {/* LEADERBOARD */}
         {(profile.role === 'manager' || (profile.role === 'foreman' && foremanView === 'company')) && (
           <Card>
              <div className="p-3 border-b border-gray-100 mb-2 font-semibold text-sm">Leaderboard (Last 8 Weeks)</div>
@@ -1019,7 +1008,7 @@ export default function MasonTrackPro() {
     );
   };
 
-  if (!user || (!localStorage.getItem('masonProfile') && view !== 'dashboard')) {
+  if (!user || (!savedProfile && isProfileChecked)) {
     const sortedCrew = [...crewList].sort((a, b) => {
         if (a.role === 'manager') return 1;
         if (b.role === 'manager') return -1;
@@ -1042,7 +1031,7 @@ export default function MasonTrackPro() {
                   {loginError && <p className="text-xs text-red-600 mt-1 font-medium">{loginError}</p>}
                 </div>
               )}
-              <Button type="submit" className="w-full" disabled={!loginName || loginPin.length < 4}>Login</Button>
+              <Button type="submit" className="w-full" disabled={!loginName || loginPin.length < 4 || !crewList.find(c => c.name === loginName)?.id}>Login</Button>
             </form>
           )}
         </Card>
@@ -1069,6 +1058,17 @@ export default function MasonTrackPro() {
     );
   };
 
+  const getGreetingName = () => {
+    const name = profile.name;
+    // Check if the name contains a number (Mason 1, Foreman 2) or is a role name
+    if (name.includes('Mason ') || name.includes('Foreman') || name.includes('Manager')) {
+        return name;
+    }
+    // Otherwise, split by space and take the first name
+    return name.split(' ')[0];
+  }
+
+
   return (
     <div className="min-h-screen bg-slate-50 text-gray-800 font-sans pb-20 md:pb-0">
       <div className={`w-full px-4 py-1 text-xs font-medium flex justify-center items-center gap-2 ${isOnline ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-white'}`}>
@@ -1077,7 +1077,7 @@ export default function MasonTrackPro() {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10 px-4 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-2">
           <div className="bg-orange-600 text-white p-1.5 rounded-lg"><BrickWall size={20} /></div>
-          <div className="leading-tight"><h1 className="font-bold text-gray-900 text-lg">MasonTrack</h1><p className="text-xs text-gray-500 capitalize">{profile.name} • {profile.role}</p></div>
+          <div className="leading-tight"><h1 className="font-bold text-gray-900 text-lg">MasonTrack Pro</h1><p className="text-xs text-gray-500 capitalize">{profile.name} • {profile.role}</p></div>
         </div>
         <Button variant="ghost" onClick={handleLogout} className="text-xs p-2">Log Out</Button>
       </header>
@@ -1088,7 +1088,7 @@ export default function MasonTrackPro() {
              <div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-2xl p-6 text-white shadow-lg relative">
                <div className="flex justify-between items-start">
                    <div>
-                        <h2 className="text-2xl font-bold mb-1">Hello, {profile.name.split(' ')[0]}</h2>
+                        <h2 className="text-2xl font-bold mb-1">Hello, {getGreetingName()}</h2>
                         <div className="flex items-center gap-2 opacity-90 mb-6 text-sm">
                             <MessageSquare size={14} /> {motd}
                             {profile.role === 'manager' && <button onClick={() => setView('edit_motd')} className="bg-white/20 p-1 rounded hover:bg-white/30 transition"><Pencil size={12}/></button>}
