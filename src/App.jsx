@@ -3,6 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
+  signInWithCustomToken,
   onAuthStateChanged
 } from 'firebase/auth';
 import { 
@@ -11,7 +12,6 @@ import {
   addDoc, 
   query, 
   onSnapshot, 
-  orderBy, 
   serverTimestamp, 
   deleteDoc, 
   doc, 
@@ -61,26 +61,39 @@ import {
 } from 'lucide-react';
 
 // --- Firebase Configuration ---
-const firebaseConfig = {
-  apiKey: "AIzaSyD2abWWT2aqYQHRa-E16f_NPs_ESvRwaR0",
-  authDomain: "masontrack-pro.firebaseapp.com",
-  projectId: "masontrack-pro",
-  storageBucket: "masontrack-pro.firebasestorage.app",
-  messagingSenderId: "913814562702",
-  appId: "1:913814562702:web:1fbf33e71c73ac1377a6df"
+const getFirebaseConfig = () => {
+  try {
+    if (typeof __firebase_config !== 'undefined') {
+      return JSON.parse(__firebase_config);
+    }
+  } catch (e) {
+    console.log("Using fallback config");
+  }
+  return {
+    apiKey: "AIzaSyD2abWWT2aqYQHRa-E16f_NPs_ESvRwaR0",
+    authDomain: "masontrack-pro.firebaseapp.com",
+    projectId: "masontrack-pro",
+    storageBucket: "masontrack-pro.firebasestorage.app",
+    messagingSenderId: "913814562702",
+    appId: "1:913814562702:web:1fbf33e71c73ac1377a6df"
+  };
 };
 
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(getFirebaseConfig());
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = "masonry-crew-main";
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'masonry-crew-main';
 
 // --- Constants ---
 const MATERIALS = {
-  BRICK: { label: 'Standard Brick', unit: 'units', perSqFt: 6.75 },
-  BLOCK_8: { label: '8" Block', unit: 'units', perSqFt: 1.125 },
-  BLOCK_12: { label: '12" Block', unit: 'units', perSqFt: 1.125 },
-  VENEER: { label: 'Stone Veneer', unit: 'sq ft', perSqFt: 1 },
+  BLOCK_4: { label: '4" Block', unit: 'units', perSqFt: 1.125, nominalH: 8, nominalL: 16 },
+  BLOCK_6: { label: '6" Block', unit: 'units', perSqFt: 1.125, nominalH: 8, nominalL: 16 },
+  BLOCK_8: { label: '8" Block', unit: 'units', perSqFt: 1.125, nominalH: 8, nominalL: 16 },
+  BLOCK_10: { label: '10" Block', unit: 'units', perSqFt: 1.125, nominalH: 8, nominalL: 16 },
+  BLOCK_12: { label: '12" Block', unit: 'units', perSqFt: 1.125, nominalH: 8, nominalL: 16 },
+  BRICK_STD: { label: 'Standard Brick (4")', unit: 'units', perSqFt: 4.5, nominalH: 4, nominalL: 8 }, 
+  BRICK_MOD: { label: 'Modular Brick (3⅛")', unit: 'units', perSqFt: 5.76, nominalH: 3.125, nominalL: 8 },
+  VENEER: { label: 'Veneer', unit: 'sq ft', perSqFt: 1, isArea: true },
 };
 
 const DEFAULT_CREW = [
@@ -114,9 +127,8 @@ const formatGraphDate = (date, isWeekly) => {
 const formatISODate = (date) => {
   if (!date || isNaN(date.getTime())) return new Date().toISOString().split('T')[0];
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const month = String(date.getDate()).padStart(2, '0');
+  return date.toISOString().split('T')[0];
 };
 
 // --- Components ---
@@ -212,43 +224,74 @@ const TrendChart = React.memo(({ data, keys, xKey = 'label' }) => {
   );
 });
 
-const DimensionInput = ({ label, value, onChange }) => {
-  const [mode, setMode] = useState('ft-in'); 
+const DimensionInput = ({ label, value, onChange, onModeChange, currentMode, allowUnits = true }) => {
   const [ft, setFt] = useState('');
   const [inc, setInc] = useState('');
 
   // Reset local state only when value prop is cleared/changed externally
   useEffect(() => { 
-      if (!value) { setFt(''); setInc(''); } 
-  }, [value]);
+      if (value === 0) { setFt(''); setInc(''); } 
+  }, [value, currentMode]);
 
-  const handleUpdate = (newFt, newIn) => {
-    const f = parseFloat(newFt) || 0;
-    const i = parseFloat(newIn) || 0;
-    
-    if (mode === 'ft') onChange(f);
-    else if (mode === 'in') onChange(i / 12);
-    else if (mode === 'ft-in') onChange(f + (i / 12));
-    
-    setFt(newFt); 
-    setInc(newIn);
+  const handleUpdate = (newVal1, newVal2) => {
+    if (currentMode === 'units') { 
+      const unitCount = parseFloat(newVal1) || 0;
+      setFt(newVal1); 
+      onChange(unitCount, currentMode); 
+    } else if (currentMode === 'ft-in') {
+        const f = parseFloat(newVal1) || 0;
+        const i = parseFloat(newVal2) || 0;
+        const finalValue = f + (i / 12);
+        setFt(newVal1); 
+        setInc(newVal2);
+        onChange(finalValue, currentMode);
+    }
   };
 
+  // PASS THE MODE CHANGE UP TO PARENT
+  const handleModeSwitch = (newMode) => {
+    setFt(''); setInc(''); 
+    if (onModeChange) {
+        onModeChange(newMode); 
+    }
+  };
+
+  const isLength = label.includes('Length');
+  const placeholderText = currentMode === 'units' 
+                          ? (isLength ? "0 Units" : "0 Units")
+                          : "0";
+
   return (
-    <div className="mb-3">
+    <div className="mb-3 DimensionInput">
       <div className="flex justify-between items-center mb-1">
         <label className="text-xs font-semibold text-gray-500 uppercase">{label}</label>
         <div className="flex bg-gray-100 rounded p-0.5">
-          <button type="button" onClick={() => setMode('ft-in')} className={`px-2 py-0.5 text-[10px] rounded ${mode==='ft-in' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Ft & In</button>
-          <button type="button" onClick={() => setMode('in')} className={`px-2 py-0.5 text-[10px] rounded ${mode==='in' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Inches</button>
-          <button type="button" onClick={() => setMode('ft')} className={`px-2 py-0.5 text-[10px] rounded ${mode==='ft' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Feet</button>
+          {allowUnits && (
+            <button type="button" onClick={() => handleModeSwitch('units')} className={`px-2 py-0.5 text-[10px] rounded ${currentMode==='units' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Units</button>
+          )}
+          <button type="button" onClick={() => handleModeSwitch('ft-in')} className={`px-2 py-0.5 text-[10px] rounded ${currentMode==='ft-in' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Ft & In</button>
         </div>
       </div>
-      <div className="flex gap-2">
-        {mode === 'ft' && <div className="relative w-full"><input type="number" step="0.1" placeholder="10.5" className="w-full px-3 py-2 border border-gray-300 rounded" value={ft} onChange={e => handleUpdate(e.target.value, 0)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">ft</span></div>}
-        {mode === 'in' && <div className="relative w-full"><input type="number" placeholder="126" className="w-full px-3 py-2 border border-gray-300 rounded" value={ft} onChange={e => handleUpdate(e.target.value, 0)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">in</span></div>}
-        {mode === 'ft-in' && <><div className="relative w-full"><input type="number" placeholder="10" className="w-full px-3 py-2 border border-gray-300 rounded" value={ft} onChange={e => handleUpdate(e.target.value, inc)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">ft</span></div><div className="relative w-full"><input type="number" placeholder="6" className="w-full px-3 py-2 border border-gray-300 rounded" value={inc} onChange={e => handleUpdate(ft, e.target.value)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">in</span></div></>}
-      </div>
+      
+      {currentMode === 'units' && allowUnits && (
+        <div className="relative w-full">
+            <input 
+                type="number" 
+                placeholder={placeholderText} 
+                className="w-full px-3 py-2 border border-gray-300 rounded" 
+                value={ft}
+                onChange={e => handleUpdate(e.target.value)} 
+            />
+            <span className="absolute right-3 top-2 text-gray-400 text-sm">units</span>
+        </div>
+      )}
+      
+      {currentMode === 'ft-in' && (
+          <div className="flex gap-2">
+            <div className="relative w-full"><input type="number" placeholder="0" className="w-full px-3 py-2 border border-gray-300 rounded" value={ft} onChange={e => handleUpdate(e.target.value, inc)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">ft</span></div>
+            <div className="relative w-full"><input type="number" placeholder="0" className="w-full px-3 py-2 border border-gray-300 rounded" value={inc} onChange={e => handleUpdate(ft, e.target.value)} /><span className="absolute right-3 top-2 text-gray-400 text-sm">in</span></div>
+          </div>
+      )}
     </div>
   );
 };
@@ -257,6 +300,7 @@ const DimensionInput = ({ label, value, onChange }) => {
 
 export default function MasonTrackPro() {
   const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true); 
   const [crewList, setCrewList] = useState([]);
   const [jobList, setJobList] = useState([]);
   const [profile, setProfile] = useState({ id: '', name: '', role: 'mason', pin: '' });
@@ -272,15 +316,17 @@ export default function MasonTrackPro() {
   const [loginName, setLoginName] = useState('');
   const [loginPin, setLoginPin] = useState('');
   const [loginError, setLoginError] = useState('');
-
-  // Flag to know if the initial profile check has completed
   const [isProfileChecked, setIsProfileChecked] = useState(false);
-  // State to hold the saved profile from localStorage immediately
   const [savedProfile, setSavedProfile] = useState(null);
 
-
   useEffect(() => {
-    const initAuth = async () => { await signInAnonymously(auth); };
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (curr) => {
       if (curr) {
@@ -289,167 +335,141 @@ export default function MasonTrackPro() {
         if (saved) {
              setSavedProfile(JSON.parse(saved));
         }
-        // Mark the check as complete AFTER attempting to load profile
+        setAuthLoading(false);
         setIsProfileChecked(true); 
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Effect to apply the saved profile once both Auth and ProfileCheck are complete
   useEffect(() => {
     if (isProfileChecked && savedProfile && savedProfile.name) {
-        // Crucial Check: Ensure the saved user still exists in the crew list
         const exists = crewList.find(c => c.name === savedProfile.name);
-        if (exists) {
-           setProfile(savedProfile);
-        } else {
-           // User was deleted from crew list, force fresh login
-           localStorage.removeItem('masonProfile');
-           setSavedProfile(null);
-           setProfile({ id: '', name: '', role: 'mason', pin: '' });
-        }
+        if (exists) { setProfile(savedProfile); } 
+        else { localStorage.removeItem('masonProfile'); setSavedProfile(null); setProfile({ id: '', name: '', role: 'mason', pin: '' }); }
     }
   }, [isProfileChecked, savedProfile, crewList]);
-
 
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'app_settings', 'global'), (snap) => {
-        if (snap.exists()) setMotd(snap.data().message || "All systems go.");
+        if (snap.exists()) setMotd(String(snap.data().message || "All systems go."));
     });
     return () => unsub();
   }, [user]);
 
+  // Modified Query: Sort in JS
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'), orderBy('effectiveDate', 'desc'));
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'));
     return onSnapshot(q, (snap) => {
-      const fetched = snap.docs.map(d => {
-        const data = d.data();
-        const dateObj = data.effectiveDate ? data.effectiveDate.toDate() : (data.timestamp ? data.timestamp.toDate() : new Date());
-        return { id: d.id, ...data, date: dateObj };
-      });
-      setLogs(fetched);
+      const data = snap.docs.map(d => ({ 
+        id: d.id, 
+        ...d.data(), 
+        date: d.data().effectiveDate ? d.data().effectiveDate.toDate() : (d.data().timestamp ? d.data().timestamp.toDate() : new Date()) 
+      }));
+      data.sort((a, b) => b.date - a.date);
+      setLogs(data.slice(0, 500));
     });
   }, [user]);
 
+  // Modified Query: Sort in JS
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'), orderBy('name'));
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'));
     return onSnapshot(q, async (snap) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setCrewList(list);
-
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a, b) => a.name.localeCompare(b.name));
+      setCrewList(data);
       if (snap.empty && navigator.onLine) {
         const batch = writeBatch(db);
-        DEFAULT_CREW.forEach(p => {
-            const ref = doc(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'));
-            batch.set(ref, { ...p, timestamp: serverTimestamp() });
-        });
+        DEFAULT_CREW.forEach(p => { batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members')), { ...p, timestamp: serverTimestamp() }); });
         await batch.commit();
       }
     });
   }, [user]);
 
+  // Modified Query: Sort in JS
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'jobsites'), orderBy('name'));
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'jobsites'));
     return onSnapshot(q, async (snap) => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data.sort((a, b) => a.name.localeCompare(b.name));
+      setJobList(data);
       if (snap.empty && navigator.onLine) {
         const batch = writeBatch(db);
-        DEFAULT_JOBS.forEach(name => {
-          const ref = doc(collection(db, 'artifacts', appId, 'public', 'data', 'jobsites'));
-          batch.set(ref, { name, active: true, timestamp: serverTimestamp() });
-        });
+        DEFAULT_JOBS.forEach(name => { batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'jobsites')), { name, active: true, timestamp: serverTimestamp() }); });
         await batch.commit();
-      } else {
-        setJobList(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
     });
   }, [user]);
 
   const processSyncQueue = async () => {
-    setIsSyncing(true);
-    const queue = [...syncQueue];
-    const newQueue = [];
+    setIsSyncing(true); const queue = [...syncQueue], newQueue = [];
     for (const entry of queue) {
       try {
         const dParts = entry.dateString.split('-');
         const dObj = new Date(dParts[0], dParts[1] - 1, dParts[2], 12, 0, 0);
         let finalCount = entry.count;
-        if (entry.entryMethod === 'camera') {
-            await new Promise(r => setTimeout(r, 1500));
-            finalCount = Math.floor(Math.random() * (120 - 40 + 1)) + 40; 
-        }
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'), {
-          ...entry, count: finalCount, timestamp: serverTimestamp(), effectiveDate: Timestamp.fromDate(dObj), syncedAt: serverTimestamp()
-        });
+        if (entry.entryMethod === 'camera') { await new Promise(r => setTimeout(r, 1500)); finalCount = Math.floor(Math.random() * (120 - 40 + 1)) + 40; }
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'), { ...entry, count: finalCount, timestamp: serverTimestamp(), effectiveDate: Timestamp.fromDate(dObj), syncedAt: serverTimestamp() });
       } catch (err) { newQueue.push(entry); }
     }
-    setSyncQueue(newQueue);
-    setIsSyncing(false);
+    setSyncQueue(newQueue); setIsSyncing(false);
   };
 
+  // Standard login handler (for button click)
   const handleLogin = (e) => {
-    e.preventDefault();
-    if (!loginName || !loginPin || crewList.length === 0) {
-        setLoginError("Please wait for data to load.");
-        return;
-    }
+    if(e) e.preventDefault();
+    if (!loginName || !loginPin || crewList.length === 0) { setLoginError("Please wait for data..."); return; }
+    const user = crewList.find(c => c.name === loginName);
+    if (!user || !user.id) { setLoginError("User invalid. Try again."); setTimeout(() => setLoginError("Try again."), 500); return; }
+    if ((user.pin || '1234') !== loginPin) { setLoginError("Incorrect PIN."); return; }
+    const profileData = { id: user.id, name: user.name, role: user.role, pin: user.pin };
+    localStorage.setItem('masonProfile', JSON.stringify(profileData));
+    setProfile(profileData); setSavedProfile(profileData); setLoginPin(''); setLoginError(''); setView('dashboard');
+  };
 
-    const selectedUser = crewList.find(c => c.name === loginName);
+  // Dedicated handler for numeric keypad auto-login
+  const handlePinEntry = (e) => {
+    // Strip non-numeric chars just in case
+    const val = e.target.value.replace(/\D/g, '').slice(0, 4);
+    setLoginPin(val);
+    setLoginError('');
     
-    // CRITICAL: Check if user data is fully loaded and valid
-    if (!selectedUser || !selectedUser.id) { 
-        setLoginError("User data still loading or invalid."); 
-        // Force the app to wait a moment for the Firestore snapshot to complete
-        setTimeout(() => setLoginError("Try again."), 500);
-        return; 
+    if (val.length === 4) {
+      const user = crewList.find(c => c.name === loginName);
+      if (user) {
+         if ((user.pin || '1234') === val) {
+             const profileData = { id: user.id, name: user.name, role: user.role, pin: user.pin };
+             localStorage.setItem('masonProfile', JSON.stringify(profileData));
+             setProfile(profileData); 
+             setSavedProfile(profileData); 
+             setLoginPin(''); 
+             setLoginError(''); 
+             setView('dashboard');
+         } else {
+             setLoginError("Incorrect PIN.");
+         }
+      }
     }
-
-    const validPin = selectedUser.pin || '1234';
-    if (validPin !== loginPin) { setLoginError("Incorrect PIN."); return; }
-
-    const userProfile = { id: selectedUser.id, name: selectedUser.name, role: selectedUser.role, pin: validPin };
-    localStorage.setItem('masonProfile', JSON.stringify(userProfile));
-    setProfile(userProfile);
-    setSavedProfile(userProfile); // Update savedProfile to trigger auto-render
-    setLoginPin(''); setLoginError(''); setView('dashboard');
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('masonProfile');
-    setProfile({ id: '', name: '', role: 'mason', pin: '' });
-    setSavedProfile(null); 
-    setLoginName(''); setLoginPin(''); setView('login');
-    setIsProfileChecked(true); 
+    localStorage.removeItem('masonProfile'); setProfile({ id: '', name: '', role: 'mason', pin: '' }); setSavedProfile(null); setLoginName(''); setLoginPin(''); setView('login'); setIsProfileChecked(true); 
   };
 
-  // EXPORT FUNCTION
   const exportData = () => {
-    const logsToExport = logs;
-    if (logsToExport.length === 0) { alert("No logs to export."); return; }
+    if (logs.length === 0) { alert("No logs to export."); return; }
     const headers = ["Date", "Mason", "Role", "Jobsite", "Material", "Count", "Unit", "Hours", "UPH", "Notes", "Entry Method"];
-    const rows = logsToExport.map(log => {
-        const dateStr = log.date.toISOString().split('T')[0];
-        const uph = log.hours > 0 ? (log.count / log.hours).toFixed(1) : 0;
+    const rows = logs.map(log => {
         const safeNotes = log.notes ? `"${log.notes.replace(/"/g, '""')}"` : ""; 
-        return [
-            dateStr, log.userName, log.userRole, log.jobsite, log.materialLabel,
-            log.count, log.unit, log.hours, uph, safeNotes, log.entryMethod
-        ].join(",");
+        return [log.date.toISOString().split('T')[0], log.userName, log.userRole, log.jobsite, log.materialLabel, log.count, log.unit, log.hours, log.hours > 0 ? (log.count/log.hours).toFixed(1) : 0, safeNotes, log.entryMethod].join(",");
     });
-    const csvContent = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `MasonTrack_Export_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `MasonTrack_Export_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
   useEffect(() => {
@@ -459,217 +479,95 @@ export default function MasonTrackPro() {
     window.addEventListener('online', hOn); window.addEventListener('offline', hOff);
     return () => { window.removeEventListener('online', hOn); window.removeEventListener('offline', hOff); };
   }, []);
-
   useEffect(() => { localStorage.setItem('masonSyncQueue', JSON.stringify(syncQueue)); }, [syncQueue]);
   useEffect(() => { if (isOnline && syncQueue.length > 0 && !isSyncing) processSyncQueue(); }, [isOnline, syncQueue, isSyncing]);
 
-  // --- Views ---
-
   const ChangePinView = () => {
-    const [oldPin, setOldPin] = useState('');
-    const [newPin, setNewPin] = useState('');
-    const [msg, setMsg] = useState('');
-
+    const [oldPin, setOldPin] = useState(''), [newPin, setNewPin] = useState(''), [msg, setMsg] = useState('');
     const updatePin = async (e) => {
         e.preventDefault();
         const currentUser = crewList.find(c => c.id === profile.id);
-        const currentPin = currentUser?.pin || '1234';
-
-        if (currentPin !== oldPin) { setMsg("Old PIN is incorrect."); return; }
-        if (newPin.length < 4) { setMsg("New PIN must be at least 4 digits."); return; }
-        
+        if ((currentUser?.pin || '1234') !== oldPin) { setMsg("Old PIN is incorrect."); return; }
+        if (newPin.length < 4) { setMsg("Min 4 digits."); return; }
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'crew_members', profile.id), { pin: newPin });
-        setMsg("PIN updated successfully!");
-        // Update local storage and profile state immediately
-        setProfile(p => ({...p, pin: newPin})); 
-        localStorage.setItem('masonProfile', JSON.stringify({...profile, pin: newPin}));
+        setMsg("Success!"); setProfile(p => ({...p, pin: newPin})); localStorage.setItem('masonProfile', JSON.stringify({...profile, pin: newPin}));
         setTimeout(() => setView('dashboard'), 1500);
     };
-
-    return (
-        <div className="space-y-6 animate-fade-in">
-            <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold text-gray-800">Change PIN</h2>
-                <Button variant="ghost" onClick={() => setView('dashboard')}>Back</Button>
-            </div>
-            <Card>
-                <form onSubmit={updatePin} className="space-y-4">
-                    <Input label="Current PIN" type="password" value={oldPin} onChange={e => setOldPin(e.target.value)} required />
-                    <Input label="New PIN" type="password" value={newPin} onChange={e => setNewPin(e.target.value)} required />
-                    {msg && <div className={`text-sm ${msg.includes('success') ? 'text-green-600' : 'text-red-600'}`}>{msg}</div>}
-                    <Button type="submit" className="w-full">Update PIN</Button>
-                </form>
-            </Card>
-        </div>
-    );
+    return (<div className="space-y-6 animate-fade-in"><div className="flex justify-between"><h2 className="text-xl font-bold">Change PIN</h2><Button variant="ghost" onClick={() => setView('dashboard')}>Back</Button></div><Card><form onSubmit={updatePin} className="space-y-4"><Input label="Current PIN" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4} placeholder="****" value={oldPin} onChange={e => setOldPin(e.target.value.replace(/\D/g, '').slice(0,4))} /><Input label="New PIN" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4} placeholder="****" value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, '').slice(0,4))} />{msg && <div className={`text-sm ${msg.includes('Success')?'text-green-600':'text-red-600'}`}>{msg}</div>}<Button type="submit" className="w-full">Update</Button></form></Card></div>);
   };
 
   const ManageDataView = ({ type }) => {
-    const [newItem, setNewItem] = useState('');
-    const [newRole, setNewRole] = useState('mason');
-    const [pinToSet, setPinToSet] = useState(''); 
-    const [editingId, setEditingId] = useState(null);
-    const [submitting, setSubmitting] = useState(false);
-    
-    const isCrew = type === 'crew';
-    const collectionName = isCrew ? 'crew_members' : 'jobsites';
-    const list = isCrew ? crewList : jobList;
-
+    const [newItem, setNewItem] = useState(''), [newRole, setNewRole] = useState('mason'), [pinToSet, setPinToSet] = useState('');
+    const [editingId, setEditingId] = useState(null), [submitting, setSubmitting] = useState(false);
+    const isCrew = type === 'crew', collectionName = isCrew ? 'crew_members' : 'jobsites', list = isCrew ? crewList : jobList;
     const handleSubmit = async (e) => {
-      e.preventDefault();
-      if (!newItem.trim()) return;
-      setSubmitting(true);
+      e.preventDefault(); if (!newItem.trim()) return; setSubmitting(true);
       try {
-        if (editingId) {
-            const updateData = { name: newItem.trim() };
-            if (isCrew) {
-                updateData.role = newRole;
-                if (pinToSet.trim().length >= 4) updateData.pin = pinToSet.trim();
-            }
-            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, editingId), updateData);
-            setEditingId(null);
-        } else {
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), { 
-                name: newItem.trim(), 
-                ...(isCrew ? { role: newRole, pin: pinToSet.trim() || '1234' } : { active: true }), 
-                timestamp: serverTimestamp() 
-            });
-        }
-        setNewItem('');
-        setPinToSet('');
-        if (isCrew && !editingId) setNewRole('mason'); 
-      } catch(e) { console.error(e); alert("Error saving item"); }
-      setSubmitting(false);
+        const data = { name: newItem.trim() };
+        if (isCrew) { data.role = newRole; if (pinToSet.trim().length >= 4) data.pin = pinToSet.trim(); }
+        if (editingId) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, editingId), data);
+        else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), { ...data, ...(isCrew ? {pin: pinToSet.trim()||'1234'} : {active:true}), timestamp: serverTimestamp() });
+        setNewItem(''); setPinToSet(''); setEditingId(null); if (isCrew) setNewRole('mason');
+      } catch(e) { alert("Error saving."); } setSubmitting(false);
     };
-
-    const handleEdit = (item) => {
-        setEditingId(item.id);
-        setNewItem(item.name);
-        if (isCrew) {
-            setNewRole(item.role);
-            setPinToSet(''); 
-        }
-    };
-
     const hardResetCrew = async () => {
-        if (!confirm("WARNING: This will delete ALL current crew members and reset to the default list. This cannot be undone.")) return;
-        setSubmitting(true);
-        try {
-            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'));
-            const snapshot = await getDocs(q); 
-            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'crew_members', d.id)));
-            await Promise.all(deletePromises);
-
-            const batch = writeBatch(db);
-            DEFAULT_CREW.forEach(p => {
-                const ref = doc(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'));
-                batch.set(ref, { ...p, timestamp: serverTimestamp() });
-            });
-            await batch.commit();
-            alert("Crew list has been reset to defaults.");
-        } catch (err) {
-            console.error(err);
-            alert("Failed to reset crew.");
-        }
-        setSubmitting(false);
+        if (!confirm("WARNING: Reset crew to defaults?")) return; setSubmitting(true);
+        const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members'));
+        const snap = await getDocs(q);
+        await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'crew_members', d.id))));
+        const batch = writeBatch(db);
+        DEFAULT_CREW.forEach(p => { batch.set(doc(collection(db, 'artifacts', appId, 'public', 'data', 'crew_members')), { ...p, timestamp: serverTimestamp() }); });
+        await batch.commit(); setSubmitting(false);
     };
-
-    const handleCancel = () => { 
-        setEditingId(null); 
-        setNewItem(''); 
-        setNewRole('mason'); 
-        setPinToSet(''); 
-    };
-    const remove = async (id) => { if (confirm('Delete this item?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id)); };
-
     return (
       <div className="space-y-6 animate-fade-in">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold text-gray-800">Manage {isCrew ? 'Crew' : 'Jobs'}</h2>
-          <Button variant="ghost" onClick={() => setView('dashboard')}>Back</Button>
-        </div>
+        <div className="flex justify-between"><h2 className="text-xl font-bold">Manage {isCrew ? 'Crew' : 'Jobs'}</h2><Button variant="ghost" onClick={() => setView('dashboard')}>Back</Button></div>
         <Card>
           <form onSubmit={handleSubmit} className="flex flex-col gap-3 mb-6">
-            <div className="flex justify-between items-center">
-                <span className="text-sm font-semibold text-gray-500 uppercase">{editingId ? 'Edit Item' : 'Add New'}</span>
-                {editingId && <button type="button" onClick={handleCancel} className="text-xs text-red-500 hover:underline">Cancel Edit</button>}
-            </div>
-            <Input placeholder={`Name`} value={newItem} onChange={(e) => setNewItem(e.target.value)} className="mb-0"/>
-            {isCrew && (
-                <div className="flex flex-col gap-2">
-                    <div className="flex gap-2">
-                        <select className="w-1/2 px-3 py-2 border border-gray-300 rounded-md bg-white text-sm" value={newRole} onChange={e => setNewRole(e.target.value)}>
-                            <option value="mason">Mason</option>
-                            <option value="foreman">Foreman</option>
-                            <option value="manager">Manager</option>
-                        </select>
-                        <input 
-                            type="text" 
-                            placeholder={editingId ? "Reset PIN (Optional)" : "PIN (Default 1234)"}
-                            className="w-1/2 px-3 py-2 border border-gray-300 rounded-md text-sm"
-                            value={pinToSet}
-                            onChange={(e) => setPinToSet(e.target.value)}
-                        />
-                    </div>
-                </div>
-            )}
-            <Button type="submit" disabled={submitting || !newItem.trim()}>
-                {editingId ? <Save size={18} /> : <Plus size={18} />} {editingId ? 'Update' : 'Add'}
-            </Button>
+            <div className="flex justify-between items-center"><span className="text-sm font-semibold text-gray-500 uppercase">{editingId ? 'Edit' : 'Add New'}</span>{editingId && <button type="button" onClick={() => {setEditingId(null); setNewItem('');}} className="text-xs text-red-500">Cancel</button>}</div>
+            <Input placeholder="Name" value={newItem} onChange={(e) => setNewItem(e.target.value)} className="mb-0"/>
+            {isCrew && <div className="flex gap-2"><select className="w-1/2 px-3 py-2 border rounded-md text-sm" value={newRole} onChange={e => setNewRole(e.target.value)}><option value="mason">Mason</option><option value="foreman">Foreman</option><option value="manager">Manager</option></select><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={4} placeholder={editingId ? "Reset PIN" : "PIN (****)"} className="w-1/2 px-3 py-2 border rounded-md text-sm" value={pinToSet} onChange={e => setPinToSet(e.target.value.replace(/\D/g, '').slice(0,4))}/></div>}
+            <Button type="submit" disabled={submitting || !newItem.trim()}><Save size={18} /> {editingId ? 'Update' : 'Add'}</Button>
           </form>
-          <div className="space-y-2">
-            {list.map((item) => (
-              <div key={item.id} className={`flex items-center justify-between p-3 rounded-lg border ${editingId === item.id ? 'bg-orange-50 border-orange-300 ring-1 ring-orange-300' : 'bg-gray-50 border-gray-100'}`}>
-                <div className="flex items-center gap-3">
-                   <div className="bg-white p-2 rounded-full text-gray-500 border border-gray-200">
-                     {isCrew ? (item.role === 'manager' ? <Briefcase size={16}/> : item.role === 'foreman' ? <HardHat size={16}/> : <Users size={16} />) : <MapPin size={16} />}
-                   </div>
-                   <div>
-                       <div className="font-medium text-gray-800">{item.name}</div>
-                       {isCrew && <div className="text-xs text-gray-400 capitalize">{item.role}</div>}
-                   </div>
-                </div>
-                <div className="flex gap-1">
-                    <button onClick={() => handleEdit(item)} className="text-gray-400 hover:text-blue-500 p-2"><Pencil size={18}/></button>
-                    <button onClick={() => remove(item.id)} className="text-gray-400 hover:text-red-500 p-2"><Trash2 size={18} /></button>
-                </div>
-              </div>
-            ))}
-          </div>
-          {isCrew && (
-              <div className="mt-8 pt-4 border-t border-red-100">
-                  <h3 className="text-xs font-bold text-red-600 uppercase mb-2">Danger Zone</h3>
-                  <button onClick={hardResetCrew} disabled={submitting} className="w-full py-3 border border-red-200 text-red-600 rounded-lg text-sm hover:bg-red-50 flex items-center justify-center gap-2">
-                      <AlertTriangle size={16} /> Reset to Default Crew
-                  </button>
-                  <div className="mt-4 pt-4 border-t border-gray-100">
-                      <button onClick={exportData} className="w-full py-3 border border-green-200 text-green-700 bg-green-50 rounded-lg text-sm hover:bg-green-100 flex items-center justify-center gap-2">
-                          <Download size={16} /> Download Backup (CSV)
-                      </button>
-                  </div>
-              </div>
-          )}
+          <div className="space-y-2">{list.map((item) => (<div key={item.id} className={`flex justify-between p-3 rounded-lg border ${editingId===item.id?'bg-orange-50 border-orange-300':'bg-gray-50'}`}><div className="flex items-center gap-3"><div className="bg-white p-2 rounded-full border">{isCrew ? (item.role === 'manager' ? <Briefcase size={16}/> : item.role === 'foreman' ? <HardHat size={16}/> : <Users size={16} />) : <MapPin size={16} />}</div><div><div className="font-medium">{item.name}</div>{isCrew && <div className="text-xs text-gray-400 capitalize">{item.role}</div>}</div></div><div className="flex gap-1"><button onClick={() => {setEditingId(item.id); setNewItem(item.name); if(isCrew) setNewRole(item.role);}} className="text-gray-400 hover:text-blue-500 p-2"><Pencil size={18}/></button><button onClick={() => {if(confirm('Delete?')) deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, item.id))}} className="text-gray-400 hover:text-red-500 p-2"><Trash2 size={18} /></button></div></div>))}</div>
+          {isCrew && <div className="mt-8 pt-4 border-t border-red-100"><button onClick={hardResetCrew} disabled={submitting} className="w-full py-3 border border-red-200 text-red-600 rounded-lg text-sm hover:bg-red-50 flex justify-center gap-2 mb-4"><AlertTriangle size={16} /> Reset Defaults</button><button onClick={exportData} className="w-full py-3 border border-green-200 text-green-700 bg-green-50 rounded-lg text-sm hover:bg-green-100 flex justify-center gap-2"><Download size={16} /> Export CSV</button></div>}
         </Card>
       </div>
     );
   };
 
   const LogEntryView = () => {
-    const [mode, setMode] = useState('manual');
-    const [entry, setEntry] = useState({
-      jobsite: jobList[0]?.name || '', material: 'BLOCK_8', hours: 8, count: '', notes: '', dateStr: formatISODate(new Date())
-    });
-    const [calc, setCalc] = useState({ w: 0, h: 0 }); 
+    // Mode defaults to 'manual'
+    const [mode, setMode] = useState('manual'); 
+    const [entry, setEntry] = useState({ jobsite: jobList[0]?.name || '', material: 'BLOCK_8', hours: 8, count: 0, notes: '', dateStr: formatISODate(new Date()) });
+    // Calc state tracks its own mode and values
+    const [calc, setCalc] = useState({ w: 0, h: 0, mode: 'units' });
     const [photoTaken, setPhotoTaken] = useState(false);
     const [targetWorker, setTargetWorker] = useState(profile.name);
     const [expandedNote, setExpandedNote] = useState(null);
 
-    const recentContextLogs = useMemo(() => {
-        let filtered = logs;
-        if (profile.role === 'mason') filtered = logs.filter(l => l.userName === profile.name);
-        return filtered.slice(0, 20); 
-    }, [logs, profile]);
+    // 1. Sync Calc Result to Entry State
+    useEffect(() => {
+        if (calc.mode === 'units') {
+            // Units mode: simple multiplication
+            const result = (calc.w > 0 && calc.h > 0) ? Math.round(calc.w * calc.h) : 0;
+            setEntry(prev => ({ ...prev, count: result }));
+        }
+    }, [calc.w, calc.h, calc.mode]);
 
+    // 2. Initialize Tab Defaults
+    useEffect(() => {
+        if (mode === 'calc') { 
+            // FIX: Auto-select ft-in if material is VENEER, otherwise default to units
+            const isVeneer = MATERIALS[entry.material].isArea;
+            setCalc(c => ({...c, mode: isVeneer ? 'ft-in' : 'units', w: 0, h: 0})); 
+            setEntry(e => ({...e, count: 0})); 
+        } else { 
+            setEntry(e => ({...e, count: 0})); 
+        }
+    }, [mode]);
+
+    // Load Edit Data
     useEffect(() => {
       if (logToEdit) {
         setMode(logToEdit.entryMethod);
@@ -681,434 +579,260 @@ export default function MasonTrackPro() {
 
     const handleSubmit = async (e) => {
       e.preventDefault();
-      if (mode === 'manual' && (!entry.count || entry.count <= 0)) return;
-      if (mode === 'camera' && !photoTaken) return;
-
-      const dParts = entry.dateStr.split('-');
-      const dObj = new Date(dParts[0], dParts[1] - 1, dParts[2], 12, 0, 0);
-      const entryData = {
+      if ((mode !== 'camera' && entry.count <= 0) || (mode === 'camera' && !photoTaken)) return;
+      const dParts = entry.dateStr.split('-'), dObj = new Date(dParts[0], dParts[1] - 1, dParts[2], 12, 0, 0);
+      const data = {
         userId: user.uid, userName: targetWorker, loggedBy: profile.name, userRole: profile.role,
         jobsite: entry.jobsite, material: entry.material, materialLabel: MATERIALS[entry.material].label, unit: MATERIALS[entry.material].unit,
-        hours: parseFloat(entry.hours), count: mode === 'manual' || mode === 'calc' ? parseInt(entry.count) : 0,
-        entryMethod: mode, notes: entry.notes, status: mode === 'camera' ? 'pending_ai' : 'completed', dateString: entry.dateStr
+        hours: parseFloat(entry.hours), count: parseInt(entry.count), entryMethod: mode, notes: entry.notes, status: 'completed', dateString: entry.dateStr
       };
 
-      if (!isOnline && !logToEdit) { setSyncQueue([...syncQueue, entryData]); alert('Offline: Queued.'); } 
+      if (!isOnline && !logToEdit) { setSyncQueue([...syncQueue, data]); alert('Queued Offline.'); } 
       else {
-        const finalData = { ...entryData, effectiveDate: Timestamp.fromDate(dObj), timestamp: serverTimestamp() };
+        const final = { ...data, effectiveDate: Timestamp.fromDate(dObj), timestamp: serverTimestamp() };
         try {
-          if (logToEdit) { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'masonry_logs', logToEdit.id), finalData); alert('Updated!'); }
-          else { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'), finalData); alert('Logged!'); }
-        } catch(e) { if(!logToEdit) setSyncQueue([...syncQueue, entryData]); }
+          if (logToEdit) { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'masonry_logs', logToEdit.id), final); alert('Updated!'); }
+          else { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'masonry_logs'), final); alert('Logged!'); }
+        } catch(e) { if(!logToEdit) setSyncQueue([...syncQueue, data]); }
       }
       setLogToEdit(null); setView('dashboard');
     };
 
-    const handleCalc = () => {
-      const mat = MATERIALS[entry.material];
-      const sqFt = calc.w * calc.h;
-      setEntry({ ...entry, count: Math.ceil(sqFt * mat.perSqFt) });
+    // UPDATED: Specific Manual Calculate Logic
+    const handleCalcBtn = () => {
+       const mat = MATERIALS[entry.material];
+       const lengthIn = calc.w * 12; // DimensionInput sends Feet, convert to Inches
+       const heightIn = calc.h * 12; // DimensionInput sends Feet, convert to Inches
+
+       if (mat.isArea) {
+         // Veneer: Area Calculation (Sq Ft)
+         // Since inputs are in Feet, calc.w * calc.h is already Sq Ft
+         const sqFt = calc.w * calc.h;
+         setEntry({ ...entry, count: Math.ceil(sqFt) }); // User said measure in Sq Ft.
+       } else if (mat.nominalH && mat.nominalL) {
+         // Block/Brick: Specific Unit Logic
+         // Divide Wall Inch dims by Unit Nominal Inch dims
+         const unitsLong = lengthIn / mat.nominalL;
+         const unitsHigh = heightIn / mat.nominalH;
+         
+         // Multiply Height Units * Length Units
+         const totalUnits = unitsLong * unitsHigh;
+         
+         setEntry({ ...entry, count: Math.ceil(totalUnits) });
+       } else {
+         // Fallback (should not happen if data is correct)
+         setEntry({ ...entry, count: 0 });
+       }
     };
 
-    const getReadableDate = () => {
-      if (!entry.dateStr) return "Select a date";
-      const dParts = entry.dateStr.split('-');
-      return formatDate(new Date(dParts[0], dParts[1] - 1, dParts[2]));
-    };
+    // Update handlers for the DimensionInput component
+    const handleCalcDimensionChange = (val, mode) => {
+        setCalc(c => ({...c, w: val, mode: mode}));
+    }
+    const handleCalcHeightChange = (val, mode) => {
+        setCalc(c => ({...c, h: val, mode: mode}));
+    }
+    
+    // Mode switch handler passed to inputs
+    const handleCalcModeChange = (newMode) => {
+        setCalc(c => ({...c, mode: newMode, w: 0, h: 0}));
+    }
+
+    const recentContextLogs = useMemo(() => {
+      let filtered = logs;
+      if (profile.role === 'mason') filtered = logs.filter(l => l.userName === profile.name);
+      return filtered.slice(0, 20); 
+    }, [logs, profile]);
 
     return (
       <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
-        <div className="flex items-center justify-between"><h2 className="text-xl font-bold text-gray-800">{logToEdit ? 'Edit Entry' : 'New Entry'}</h2><Button variant="ghost" onClick={() => { setLogToEdit(null); setView('dashboard'); }}>Cancel</Button></div>
+        <div className="flex justify-between"><h2 className="text-xl font-bold">{logToEdit ? 'Edit' : 'New Entry'}</h2><Button variant="ghost" onClick={() => { setLogToEdit(null); setView('dashboard'); }}>Cancel</Button></div>
         <div className="grid grid-cols-3 gap-2 p-1 bg-gray-100 rounded-lg">
           {['manual', 'calc', 'camera'].map(m => <button key={m} onClick={() => !logToEdit && setMode(m)} className={`py-2 text-sm font-medium rounded-md capitalize ${mode === m ? 'bg-white shadow text-orange-600' : 'text-gray-500'} ${logToEdit ? 'opacity-50' : ''}`}>{m === 'camera' ? 'AI Camera' : m}</button>)}
         </div>
         <form onSubmit={handleSubmit}>
           <Card className="space-y-4">
-            <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
-                <div className="flex justify-between items-center mb-1"><div className="flex items-center gap-2 text-gray-600 font-semibold text-xs uppercase"><CalendarIcon size={12} /> Date</div><span className="text-xs font-bold text-orange-600">{getReadableDate()}</span></div>
-                <input type="date" className="w-full bg-white border border-gray-300 rounded px-3 py-2 font-medium" value={entry.dateStr} onChange={(e) => setEntry({...entry, dateStr: e.target.value})} required />
+            <div className="p-3 bg-gray-50 border rounded-lg flex justify-between items-center">
+                <div className="flex items-center gap-2 text-xs font-bold text-gray-600 uppercase"><CalendarIcon size={12} /> Date</div>
+                <input type="date" className="bg-transparent text-right font-medium outline-none" value={entry.dateStr} onChange={(e) => setEntry({...entry, dateStr: e.target.value})} required />
             </div>
-            {(profile.role !== 'mason' || logToEdit) && (
-              <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg flex flex-col gap-2">
-                 <div className="flex items-center gap-2 text-indigo-800 font-medium text-sm"><UserCheck size={16} /><span>Worker Name:</span></div>
-                 <select className="w-full px-3 py-2 border border-indigo-200 rounded bg-white" value={targetWorker} onChange={(e) => setTargetWorker(e.target.value)}>{crewList.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
-              </div>
-            )}
-            <Select label="Jobsite" options={jobList.length > 0 ? jobList.map(j => ({ value: j.name, label: j.name })) : [{value: '', label: 'Loading Jobs...'}]} value={entry.jobsite} onChange={e => setEntry({...entry, jobsite: e.target.value})} />
-            <div className="grid grid-cols-2 gap-4"><Select label="Material" options={Object.keys(MATERIALS).map(k => ({ value: k, label: MATERIALS[k].label }))} value={entry.material} onChange={e => setEntry({...entry, material: e.target.value})} /><Input label="Hours" type="number" step="0.5" value={entry.hours} onChange={e => setEntry({...entry, hours: e.target.value})} /></div>
+            {(profile.role !== 'mason' || logToEdit) && <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg flex flex-col gap-1"><div className="flex items-center gap-2 text-indigo-800 text-xs font-bold"><UserCheck size={12} /> WORKER</div><select className="bg-transparent w-full font-medium text-indigo-900 outline-none" value={targetWorker} onChange={(e) => setTargetWorker(e.target.value)}>{crewList.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select></div>}
+            <Select label="Jobsite" options={jobList.map(j => ({ value: j.name, label: j.name }))} value={entry.jobsite} onChange={e => setEntry({...entry, jobsite: e.target.value})} />
+            <div className="grid grid-cols-2 gap-4">
+                <Select 
+                    label="Material" 
+                    options={Object.keys(MATERIALS).map(k => ({ value: k, label: MATERIALS[k].label }))} 
+                    value={entry.material} 
+                    onChange={e => {
+                        const mat = e.target.value;
+                        setEntry({...entry, material: mat});
+                        // Auto-switch defaults
+                        // UPDATED: Check for isArea property for logic
+                        if (MATERIALS[mat].isArea) {
+                            setCalc(c => ({...c, mode: 'ft-in'}));
+                        } else {
+                            setCalc(c => ({...c, mode: 'units'}));
+                        }
+                    }} 
+                />
+                <Input label="Hours" type="number" step="0.5" value={entry.hours} onChange={e => setEntry({...entry, hours: e.target.value})} />
+            </div>
+            <div className="mb-3"><label className="text-xs font-semibold text-gray-500 uppercase">Notes</label><textarea className="w-full px-3 py-2 border rounded-md text-sm" rows="2" placeholder="Sick, rain delay, no labourer, etc." value={entry.notes} onChange={(e) => setEntry({...entry, notes: e.target.value})} /></div>
             
-            <div className="mb-3">
-                <label className="text-xs font-semibold text-gray-500 uppercase">Notes (Optional)</label>
-                <textarea className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 bg-white text-sm" rows="2" placeholder="Sick, rain delay, etc." value={entry.notes} onChange={(e) => setEntry({...entry, notes: e.target.value})} />
-            </div>
-
-            {mode === 'manual' && <div className="p-4 bg-orange-50 rounded-lg border border-orange-100"><Input label={`Count (${MATERIALS[entry.material].unit})`} type="number" className="text-2xl font-bold" value={entry.count} onChange={e => setEntry({...entry, count: e.target.value})} required /></div>}
+            {mode === 'manual' && <div className="p-4 bg-orange-50 border border-orange-100 rounded-lg"><Input label={`Count (${MATERIALS[entry.material].unit})`} type="number" className="text-2xl font-bold" value={entry.count} onChange={e => setEntry({...entry, count: e.target.value})} required /></div>}
             {mode === 'calc' && (
-              <div className="p-4 bg-blue-50 rounded-lg border border-blue-100 space-y-3">
-                <div className="grid grid-cols-1 gap-4">
-                   <DimensionInput label="Wall Length" value={calc.w} onChange={(val) => setCalc({...calc, w: val})} />
-                   <DimensionInput label="Wall Height" value={calc.h} onChange={(val) => setCalc({...calc, h: val})} />
-                </div>
-                <Button type="button" onClick={handleCalc} variant="secondary" className="w-full text-sm"><Calculator size={16} /> Calculate</Button>
-                {entry.count && <div className="text-center font-bold text-blue-800 text-lg">{entry.count} {MATERIALS[entry.material].unit}</div>}
+              <div className="p-4 bg-blue-50 border border-blue-100 rounded-lg space-y-3">
+                 <div className="grid grid-cols-1 gap-4">
+                   {/* UPDATED: Pass allowUnits prop to hide units button for Veneer */}
+                   <DimensionInput allowUnits={!MATERIALS[entry.material].isArea} label="Wall Length" value={calc.w} onChange={handleCalcDimensionChange} onModeChange={handleCalcModeChange} currentMode={calc.mode} />
+                   <DimensionInput allowUnits={!MATERIALS[entry.material].isArea} label="Wall Height" value={calc.h} onChange={handleCalcHeightChange} onModeChange={handleCalcModeChange} currentMode={calc.mode} />
+                 </div>
+                 {/* FIX: Display correct unit instead of 'Units' */}
+                 {calc.mode === 'units' ? <div className="text-center font-bold text-blue-800 text-lg">{entry.count} {MATERIALS[entry.material].unit}</div> : <Button type="button" onClick={handleCalcBtn} variant="secondary" className="w-full text-sm"><Calculator size={16}/> Calculate</Button>}
+                 {entry.count > 0 && calc.mode !== 'units' && <div className="text-center font-bold text-blue-800 text-lg">{entry.count} {MATERIALS[entry.material].unit}</div>}
               </div>
             )}
-            {mode === 'camera' && <div className="p-6 bg-purple-50 rounded-lg border border-purple-100 flex flex-col items-center justify-center space-y-4">{!photoTaken ? <div onClick={() => setPhotoTaken(true)} className="w-32 h-32 bg-purple-200 rounded-full flex items-center justify-center cursor-pointer hover:bg-purple-300"><Camera size={40} className="text-purple-700" /></div> : <div className="relative"><div className="w-full h-48 bg-gray-900 rounded-lg flex items-center justify-center overflow-hidden"><ImageIcon size={48} className="text-white opacity-50" /></div><button type="button" onClick={() => setPhotoTaken(false)} className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full"><Trash2 size={14} /></button></div>}</div>}
-            <Button type="submit" disabled={mode === 'camera' && !photoTaken} className="w-full py-3 text-lg">{logToEdit ? 'Update Entry' : (isOnline ? (mode === 'camera' ? 'Upload' : 'Submit') : 'Queue Offline')}</Button>
+            {mode === 'camera' && <div className="p-6 bg-purple-50 rounded-lg border border-purple-100 flex flex-col items-center justify-center space-y-4">{!photoTaken ? <div onClick={() => setPhotoTaken(true)} className="w-32 h-32 bg-purple-200 rounded-full flex items-center justify-center cursor-pointer"><Camera size={40} className="text-purple-700" /></div> : <div className="relative"><div className="w-full h-48 bg-gray-900 rounded-lg flex items-center justify-center overflow-hidden"><ImageIcon size={48} className="text-white opacity-50" /></div><button type="button" onClick={() => setPhotoTaken(false)} className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full"><Trash2 size={14} /></button></div>}</div>}
+            <Button type="submit" disabled={mode === 'camera' && !photoTaken} className="w-full py-3 text-lg">{logToEdit ? 'Update' : (isOnline ? 'Submit' : 'Queue Offline')}</Button>
           </Card>
         </form>
-
-        <div className="mt-8">
-            <h3 className="text-sm font-bold text-gray-500 uppercase mb-2">Recent Activity</h3>
-            <Card className="overflow-hidden">
-                <div className="max-h-64 overflow-y-auto">
-                {recentContextLogs.map(log => (
-                <div key={log.id} className="border-b border-gray-50 last:border-0">
-                    <div className="p-3 text-sm flex justify-between group">
-                        <div><div className="font-bold">{log.userName} <span className="font-normal text-gray-500">| {log.materialLabel}</span></div><div className="text-xs text-gray-400">{formatDate(log.date)} • {log.jobsite}</div></div>
-                        <div className="flex items-center gap-3">
-                            <div className="text-right font-bold text-orange-600">{log.count}</div>
-                            {log.notes && <button onClick={() => setExpandedNote(expandedNote === log.id ? null : log.id)} className={`p-1.5 rounded transition-colors ${expandedNote === log.id ? 'bg-orange-100 text-orange-600' : 'text-gray-400 hover:bg-gray-100'}`}><MessageSquare size={16}/></button>}
-                            {(profile.role !== 'mason' || profile.name === log.userName) && (<div className="flex gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => { setLogToEdit(log); window.scrollTo(0,0); }} className="p-1.5 text-blue-400 hover:bg-blue-50 rounded"><Pencil size={16}/></button><button onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'masonry_logs', log.id))} className="p-1.5 text-red-400 hover:bg-red-50 rounded"><Trash2 size={16}/></button></div>)}
-                        </div>
-                    </div>
-                    {expandedNote === log.id && <div className="px-3 pb-3 ml-3 text-xs text-gray-600 italic border-l-2 border-orange-200 mb-2">{log.notes}</div>}
-                </div>
-                ))}
-                </div>
-            </Card>
-        </div>
+        {/* Recent Logs List in Log View */}
+        <div className="mt-8"><h3 className="text-sm font-bold text-gray-500 uppercase mb-2">Recent Activity</h3><div className="space-y-2">{recentContextLogs.map(log => (<div key={log.id} className="bg-white border p-3 rounded-lg text-sm flex justify-between group"><div><div className="font-bold">{log.userName} <span className="font-normal text-gray-500">| {log.materialLabel}</span></div><div className="text-xs text-gray-400">{formatDate(log.date)} • {log.jobsite}</div></div><div className="flex items-center gap-2"><div className="font-bold text-orange-600">{log.count}</div>{(profile.role !== 'mason' || profile.name === log.userName) && <button onClick={() => { setLogToEdit(log); window.scrollTo(0,0); }} className="text-blue-400 p-1"><Pencil size={16}/></button>}</div></div>))}</div></div>
       </div>
     );
   };
 
   const ReportsView = () => {
-    const [trendMode, setTrendMode] = useState('daily'); 
-    const [breakdown, setBreakdown] = useState('total'); 
-    const [graphMetric, setGraphMetric] = useState('units'); 
-    const [filterJob, setFilterJob] = useState('All');
-    const [expandedNote, setExpandedNote] = useState(null);
-    const [foremanView, setForemanView] = useState('personal'); 
-
+    const [trendMode, setTrendMode] = useState('daily'), [breakdown, setBreakdown] = useState('total'), [graphMetric, setGraphMetric] = useState('units'), [filterJob, setFilterJob] = useState('All'), [foremanView, setForemanView] = useState('personal');
+    
     const { companyLogs, personalLogs } = useMemo(() => {
       let all = logs;
       if (filterJob !== 'All') all = all.filter(l => l.jobsite === filterJob);
-      const personal = all.filter(l => l.userName === profile.name);
-      return { companyLogs: all, personalLogs: personal };
+      return { companyLogs: all, personalLogs: all.filter(l => l.userName === profile.name) };
     }, [logs, filterJob, profile]);
 
-    const calcStats = (dataset) => {
-        const u = dataset.reduce((acc, curr) => acc + (curr.count || 0), 0);
-        const h = dataset.reduce((acc, curr) => acc + (curr.hours || 0), 0);
+    const calcStats = (ds) => {
+        const u = ds.reduce((a, c) => a + (c.count||0), 0), h = ds.reduce((a, c) => a + (c.hours||0), 0);
         return { u, h, uph: h ? (u/h).toFixed(1) : 0 };
     };
 
     const stats = useMemo(() => {
-        const now = new Date();
+        const now = new Date(), weekAgo = new Date(), eightWeeksAgo = new Date();
+        weekAgo.setDate(now.getDate() - 7); eightWeeksAgo.setDate(now.getDate() - 56);
         
-        const dailyLogsC = companyLogs.filter(l => l.date.getDate() === now.getDate() && l.date.getMonth() === now.getMonth() && l.date.getFullYear() === now.getFullYear());
-        const dailyLogsP = personalLogs.filter(l => l.date.getDate() === now.getDate() && l.date.getMonth() === now.getMonth() && l.date.getFullYear() === now.getFullYear());
-
-        const weekCutoff = new Date(); 
-        weekCutoff.setDate(now.getDate() - 7);
-        const weekLogsC = companyLogs.filter(l => l.date >= weekCutoff);
-        const weekLogsP = personalLogs.filter(l => l.date >= weekCutoff);
-
-        const eightWeekCutoff = new Date();
-        eightWeekCutoff.setDate(now.getDate() - 56);
-        const eightWeekLogsC = companyLogs.filter(l => l.date >= eightWeekCutoff);
-        const eightWeekLogsP = personalLogs.filter(l => l.date >= eightWeekCutoff);
-
-        return {
-            compDaily: calcStats(dailyLogsC),
-            compWeek: calcStats(weekLogsC),
-            comp8W: calcStats(eightWeekLogsC),
-            persDaily: calcStats(dailyLogsP),
-            persWeek: calcStats(weekLogsP),
-            pers8W: calcStats(eightWeekLogsP),
-            compAll: calcStats(companyLogs) // Keep for benchmarking
-        };
+        const getBuckets = (src) => ({
+            today: calcStats(src.filter(l => l.date.toDateString() === now.toDateString())),
+            week: calcStats(src.filter(l => l.date >= weekAgo)),
+            eightWeeks: calcStats(src.filter(l => l.date >= eightWeeksAgo))
+        });
+        return { comp: getBuckets(companyLogs), pers: getBuckets(personalLogs) };
     }, [companyLogs, personalLogs]);
 
-    const leaderboard = useMemo(() => {
-        const byUser = {};
-        companyLogs.forEach(l => {
-            if (!byUser[l.userName]) byUser[l.userName] = { name: l.userName, units: 0, hours: 0 };
-            byUser[l.userName].units += l.count; byUser[l.userName].hours += l.hours;
-        });
-        return Object.values(byUser)
-            .map(u => ({ ...u, percent: (stats.comp8W.u > 0 ? (u.units / stats.comp8W.u) * 100 : 0) }))
-            .sort((a, b) => b.units - a.units);
-    }, [companyLogs, stats]);
-
-    const generateTrendData = (sourceLogs) => {
-      const now = new Date();
-      const dataPoints = {};
-      const seriesKeys = new Set();
-      
-      let daysToLookBack = trendMode === 'daily' ? 7 : 56; 
-      const cutoff = new Date();
-      cutoff.setDate(now.getDate() - daysToLookBack);
-      
-      const trendLogs = sourceLogs.filter(l => l.date >= cutoff);
-
-      if (trendMode === 'daily') {
-        for (let i = 6; i >= 0; i--) {
-          const d = new Date(); d.setDate(now.getDate() - i);
-          const key = formatISODate(d); 
-          dataPoints[key] = { label: formatGraphDate(d, false), rawDate: d, _count: {}, _hours: {} };
-        }
-      } else {
-        for (let i = 7; i >= 0; i--) {
-          const d = new Date(); d.setDate(now.getDate() - (i * 7));
-          const weekStart = new Date(d);
-          weekStart.setDate(d.getDate() - d.getDay());
-          const key = formatISODate(weekStart);
-          dataPoints[key] = { label: formatGraphDate(weekStart, true), rawDate: weekStart, _count: {}, _hours: {} };
-        }
-      }
-
-      trendLogs.forEach(l => {
-        let key = '';
-        if (trendMode === 'daily') {
-            key = formatISODate(l.date);
-        } else {
-            const weekStart = new Date(l.date);
-            weekStart.setDate(l.date.getDate() - l.date.getDay());
-            key = formatISODate(weekStart);
-        }
-
-        if (dataPoints[key]) {
-          let series = 'Total';
-          if (breakdown === 'jobsite') series = l.jobsite;
-          if (breakdown === 'mason' && profile.role === 'manager') series = l.userName;
-          
-          if (!dataPoints[key]._count[series]) dataPoints[key]._count[series] = 0;
-          if (!dataPoints[key]._hours[series]) dataPoints[key]._hours[series] = 0;
-          
-          dataPoints[key]._count[series] += l.count;
-          dataPoints[key]._hours[series] += l.hours;
-          
-          seriesKeys.add(series);
-        }
-      });
-
-      if (breakdown === 'total') seriesKeys.add('Total');
-
-      const finalData = Object.values(dataPoints).sort((a,b) => a.rawDate - b.rawDate).map(pt => {
-          const result = { label: pt.label };
-          seriesKeys.forEach(k => {
-              const c = pt._count[k] || 0;
-              const h = pt._hours[k] || 0;
-              result[k] = graphMetric === 'units' ? c : (h > 0 ? parseFloat((c/h).toFixed(1)) : 0);
-          });
-          return result;
-      });
-
-      return { data: finalData, keys: Array.from(seriesKeys) };
-    };
-
     const trendData = useMemo(() => {
-        let source = companyLogs;
-        if (profile.role === 'mason') source = personalLogs;
-        if (profile.role === 'foreman' && foremanView === 'personal') source = personalLogs;
+        const src = (profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? personalLogs : companyLogs;
+        const now = new Date(), cutoff = new Date();
+        cutoff.setDate(now.getDate() - (trendMode === 'daily' ? 7 : 56));
+        const filtered = src.filter(l => l.date >= cutoff);
         
-        return generateTrendData(source);
-    }, [companyLogs, personalLogs, trendMode, breakdown, profile, foremanView, graphMetric]);
+        const points = {};
+        if (trendMode === 'daily') {
+            for (let i=6; i>=0; i--) { const d=new Date(); d.setDate(now.getDate()-i); points[formatISODate(d)] = { label: formatGraphDate(d, false), raw: d, _c:{}, _h:{} }; }
+        } else {
+            for (let i=7; i>=0; i--) { const d=new Date(); d.setDate(now.getDate()-(i*7)); const start=new Date(d); start.setDate(d.getDate()-d.getDay()); points[formatISODate(start)] = { label: formatGraphDate(start, true), raw: start, _c:{}, _h:{} }; }
+        }
 
-    const StatRow = ({ title, data, icon: Icon }) => (
-        <div className="bg-white rounded-xl border border-gray-100 p-3 mb-3 shadow-sm">
-            <div className="flex items-center gap-2 mb-2 text-xs font-bold text-gray-500 uppercase">
-                {Icon && <Icon size={14} />} {title}
-            </div>
+        filtered.forEach(l => {
+            let key = trendMode === 'daily' ? formatISODate(l.date) : formatISODate(new Date(l.date.setDate(l.date.getDate()-l.date.getDay())));
+            if (points[key]) {
+                let s = breakdown === 'total' ? 'Total' : (breakdown === 'jobsite' ? l.jobsite : l.userName);
+                if (!points[key]._c[s]) { points[key]._c[s]=0; points[key]._h[s]=0; }
+                points[key]._c[s] += l.count; points[key]._h[s] += l.hours;
+            }
+        });
+
+        const keys = new Set();
+        const final = Object.values(points).sort((a,b) => a.raw - b.raw).map(p => {
+            const res = { label: p.label };
+            Object.keys(p._c).forEach(k => {
+                keys.add(k);
+                res[k] = graphMetric === 'units' ? p._c[k] : (p._h[k] ? parseFloat((p._c[k]/p._h[k]).toFixed(1)) : 0);
+            });
+            return res;
+        });
+        return { data: final, keys: Array.from(keys) };
+    }, [companyLogs, personalLogs, trendMode, breakdown, graphMetric, foremanView, profile]);
+
+    const StatBlock = ({ title, d }) => (
+        <div className="bg-white border rounded-xl p-3 mb-2 shadow-sm">
+            <div className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><Clock size={14}/> {title}</div>
             <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="bg-blue-50 rounded p-2">
-                    <div className="text-[10px] text-blue-600 font-bold">UNITS</div>
-                    <div className="font-bold text-blue-900">{data.u}</div>
-                </div>
-                <div className="bg-green-50 rounded p-2">
-                    <div className="text-[10px] text-green-600 font-bold">HOURS</div>
-                    <div className="font-bold text-green-900">{data.h}</div>
-                </div>
-                <div className="bg-orange-50 rounded p-2">
-                    <div className="text-[10px] text-orange-600 font-bold">UPH</div>
-                    <div className="font-bold text-orange-900">{data.uph}</div>
-                </div>
+                <div className="bg-blue-50 p-2 rounded"><div className="text-[10px] font-bold text-blue-600">UNITS</div><div className="font-bold text-blue-900">{d.u}</div></div>
+                <div className="bg-green-50 p-2 rounded"><div className="text-[10px] font-bold text-green-600">HOURS</div><div className="font-bold text-green-900">{d.h}</div></div>
+                <div className="bg-orange-50 p-2 rounded"><div className="text-[10px] font-bold text-orange-600">UPH</div><div className="font-bold text-orange-900">{d.uph}</div></div>
             </div>
         </div>
     );
 
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <div className="flex items-center justify-between"><h2 className="text-xl font-bold text-gray-800">Reports</h2><select className="bg-white border rounded px-2 py-1 text-sm" value={filterJob} onChange={(e) => setFilterJob(e.target.value)}><option value="All">All Jobs</option>{jobList.map(j => <option key={j.id} value={j.name}>{j.name}</option>)}</select></div>
-        
-        {profile.role === 'foreman' && (
-            <div className="flex justify-center mb-4">
-                <div className="flex bg-gray-200 p-1 rounded-lg shadow-inner">
-                    <button onClick={() => setForemanView('personal')} className={`px-4 py-1.5 text-sm rounded-md transition-all ${foremanView==='personal' ? 'bg-white shadow text-blue-700 font-bold' : 'text-gray-500'}`}>My Stats</button>
-                    <button onClick={() => setForemanView('company')} className={`px-4 py-1.5 text-sm rounded-md transition-all ${foremanView==='company' ? 'bg-white shadow text-blue-700 font-bold' : 'text-gray-500'}`}>Crew Overview</button>
-                </div>
-            </div>
-        )}
+    const activeStats = (profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.pers : stats.comp;
 
-        <div>
-            <div className="text-sm font-bold text-gray-800 mb-2">
-                {profile.role === 'mason' ? 'My Performance' : 
-                 profile.role === 'manager' ? 'Company Overview' : 
-                 (foremanView === 'personal' ? 'My Performance' : 'Company Overview')}
-            </div>
-            <StatRow title="Today" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persDaily : stats.compDaily} icon={CalendarIcon} />
-            <StatRow title="Last 7 Days" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.persWeek : stats.compWeek} icon={Clock} />
-            <StatRow title="Last 8 Weeks" data={(profile.role === 'mason' || (profile.role === 'foreman' && foremanView === 'personal')) ? stats.pers8W : stats.comp8W} icon={CalendarDays} />
-        </div>
-
-        {profile.role === 'mason' && (
-            <Card className="bg-slate-800 text-white border-none">
-                <div className="text-xs font-bold text-gray-400 uppercase mb-3">Crew Comparison (UPH)</div>
-                <div className="flex justify-between items-center">
-                    <div className="text-center w-1/2"><div className="text-2xl font-bold text-orange-400">{stats.compWeek.uph}</div><div className="text-[10px] text-gray-400 uppercase mt-1">Weekly Avg</div></div>
-                    <div className="h-10 w-px bg-gray-600"></div>
-                    <div className="text-center w-1/2"><div className="text-2xl font-bold text-white">{stats.compAll.uph}</div><div className="text-[10px] text-gray-400 uppercase mt-1">All-Time Avg</div></div>
-                </div>
-            </Card>
-        )}
-
-        <Card>
-          <div className="flex flex-col gap-3 mb-4">
-            <div className="flex items-center gap-2 font-bold text-gray-700 text-sm"><TrendingUp size={16}/> Trend</div>
-            <div className="flex justify-between items-center">
-                <div className="flex bg-gray-100 rounded-lg p-1">
-                    <button onClick={() => setTrendMode('daily')} className={`px-3 py-1 text-xs rounded-md ${trendMode === 'daily' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Daily</button>
-                    <button onClick={() => setTrendMode('quarterly')} className={`px-3 py-1 text-xs rounded-md ${trendMode === 'quarterly' ? 'bg-white shadow text-orange-600 font-bold' : 'text-gray-500'}`}>Weekly</button>
-                </div>
-                <div className="flex bg-gray-100 rounded-lg p-1">
-                    <button onClick={() => setGraphMetric('units')} className={`px-3 py-1 text-xs rounded-md ${graphMetric === 'units' ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500'}`}>Units</button>
-                    <button onClick={() => setGraphMetric('uph')} className={`px-3 py-1 text-xs rounded-md ${graphMetric === 'uph' ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500'}`}>UPH</button>
-                </div>
-            </div>
-            {((profile.role === 'manager') || (profile.role === 'foreman' && foremanView === 'company')) && (
-                <div className="flex gap-2 overflow-x-auto pb-1 border-t border-gray-100 pt-2">
-                <span className="text-xs font-semibold text-gray-400 py-1 uppercase">Breakdown:</span>
-                <button onClick={() => setBreakdown('total')} className={`px-2 py-1 text-xs rounded border ${breakdown === 'total' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600'}`}>Total</button>
-                <button onClick={() => setBreakdown('jobsite')} className={`px-2 py-1 text-xs rounded border ${breakdown === 'jobsite' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600'}`}>By Job</button>
-                <button onClick={() => setBreakdown('mason')} className={`px-2 py-1 text-xs rounded border ${breakdown === 'mason' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600'}`}>By Mason</button>
-                </div>
-            )}
-          </div>
-          <TrendChart data={trendData.data} keys={trendData.keys} />
-        </Card>
-
-        {(profile.role === 'manager' || (profile.role === 'foreman' && foremanView === 'company')) && (
-          <Card>
-             <div className="p-3 border-b border-gray-100 mb-2 font-semibold text-sm">Leaderboard (Last 8 Weeks)</div>
-             <div className="space-y-3 pt-2">{leaderboard.map((m, i) => (<div key={m.name}><div className="flex justify-between text-sm mb-1"><span className="font-medium text-gray-800">#{i+1} {m.name}</span><span className="font-bold text-gray-900">{m.units}</span></div><div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden"><div className="bg-orange-500 h-2.5 rounded-full transition-all duration-500" style={{ width: `${m.percent}%` }}></div></div></div>))}</div>
-          </Card>
-        )}
-      </div>
-    );
-  };
-
-  if (!user || (!savedProfile && isProfileChecked)) {
-    const sortedCrew = [...crewList].sort((a, b) => {
-        if (a.role === 'manager') return 1;
-        if (b.role === 'manager') return -1;
-        if (a.role === 'foreman') return 1;
-        if (b.role === 'foreman') return -1;
-        return a.name.localeCompare(b.name);
-    });
-
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <Card className="w-full max-w-md text-center space-y-6">
-          <div className="flex justify-center mb-4"><div className="bg-orange-100 p-4 rounded-full"><BrickWall className="w-10 h-10 text-orange-600" /></div></div>
-          <h1 className="text-2xl font-bold text-gray-900">MasonTrack Pro</h1>
-          {crewList.length === 0 ? <div className="text-gray-500 py-4">Loading...</div> : (
-            <form onSubmit={handleLogin} className="text-left space-y-4 mt-6">
-              <Select label="Select Your Name" options={[{label:'Select User...', value:''}, ...sortedCrew.map(c => ({ value: c.name, label: c.name }))]} value={loginName} onChange={(e) => { setLoginName(e.target.value); setLoginError(''); }} />
-              {loginName && (
-                <div className="animate-fade-in">
-                  <Input label="Enter PIN" type="password" placeholder="****" value={loginPin} onChange={(e) => { setLoginPin(e.target.value); setLoginError(''); }} className={loginError ? 'border-red-500' : ''} />
-                  {loginError && <p className="text-xs text-red-600 mt-1 font-medium">{loginError}</p>}
-                </div>
-              )}
-              <Button type="submit" className="w-full" disabled={!loginName || loginPin.length < 4 || !crewList.find(c => c.name === loginName)?.id}>Login</Button>
-            </form>
-          )}
-        </Card>
-      </div>
-    );
-  }
-
-  const EditMotdView = () => {
-    const [tempMotd, setTempMotd] = useState(motd);
-    const saveMotd = async () => {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_settings', 'global'), { message: tempMotd }, { merge: true });
-        setView('dashboard');
-    };
     return (
         <div className="space-y-6 animate-fade-in">
-            <div className="flex items-center justify-between"><h2 className="text-xl font-bold text-gray-800">Update Message</h2><Button variant="ghost" onClick={() => setView('dashboard')}>Cancel</Button></div>
+            <div className="flex justify-between items-center"><h2 className="text-xl font-bold">Reports</h2><select className="border rounded px-2 py-1 text-sm" value={filterJob} onChange={e => setFilterJob(e.target.value)}><option value="All">All Jobs</option>{jobList.map(j => <option key={j.id} value={j.name}>{j.name}</option>)}</select></div>
+            
+            {profile.role === 'foreman' && <div className="flex justify-center"><div className="bg-gray-200 p-1 rounded-lg flex"><button onClick={() => setForemanView('personal')} className={`px-4 py-1 text-sm rounded ${foremanView==='personal'?'bg-white shadow font-bold':''}`}>My Stats</button><button onClick={() => setForemanView('company')} className={`px-4 py-1 text-sm rounded ${foremanView==='company'?'bg-white shadow font-bold':''}`}>Crew</button></div></div>}
+
+            <div>
+                <StatBlock title="Today" d={activeStats.today} />
+                <StatBlock title="Last 7 Days" d={activeStats.week} />
+                <StatBlock title="Last 8 Weeks" d={activeStats.eightWeeks} />
+            </div>
+
             <Card>
-                <div className="space-y-4">
-                    <Input label="Message of the Day" value={tempMotd} onChange={e => setTempMotd(e.target.value)} />
-                    <Button onClick={saveMotd} className="w-full">Save Message</Button>
+                <div className="flex flex-col gap-3 mb-4">
+                    <div className="flex justify-between"><div className="font-bold text-gray-700 text-sm flex gap-2"><TrendingUp size={16}/> Trend</div><div className="bg-gray-100 rounded p-1 flex"><button onClick={()=>setGraphMetric('units')} className={`px-2 text-xs rounded ${graphMetric==='units'?'bg-white shadow font-bold':''}`}>Units</button><button onClick={()=>setGraphMetric('uph')} className={`px-2 text-xs rounded ${graphMetric==='uph'?'bg-white shadow font-bold':''}`}>UPH</button></div></div>
+                    <div className="flex justify-between"><div className="bg-gray-100 rounded p-1 flex"><button onClick={()=>setTrendMode('daily')} className={`px-2 text-xs rounded ${trendMode==='daily'?'bg-white shadow font-bold':''}`}>Daily</button><button onClick={()=>setTrendMode('quarterly')} className={`px-2 text-xs rounded ${trendMode==='quarterly'?'bg-white shadow font-bold':''}`}>Weekly</button></div>
+                    {profile.role !== 'mason' && <div className="flex gap-1"><button onClick={()=>setBreakdown('total')} className={`border px-2 text-xs rounded ${breakdown==='total'?'bg-blue-50':''}`}>Total</button><button onClick={()=>setBreakdown('mason')} className={`border px-2 text-xs rounded ${breakdown==='mason'?'bg-blue-50':''}`}>User</button></div>}</div>
                 </div>
+                <TrendChart data={trendData.data} keys={trendData.keys} />
             </Card>
         </div>
     );
   };
 
-  const getGreetingName = () => {
-    const name = profile.name;
-    // Check if the name contains a number (Mason 1, Foreman 2) or is a role name
-    if (name.includes('Mason ') || name.includes('Foreman') || name.includes('Manager')) {
-        return name;
-    }
-    // Otherwise, split by space and take the first name
-    return name.split(' ')[0];
+  const EditMotdView = () => {
+      const [msg, setMsg] = useState(motd);
+      return <Card><Input value={msg} onChange={e=>setMsg(e.target.value)} label="Message"/><Button onClick={async()=>{await setDoc(doc(db,'artifacts',appId,'public','data','app_settings','global'),{message:msg},{merge:true}); setView('dashboard');}}>Save</Button></Card>;
+  };
+
+  if (authLoading) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin text-orange-600" size={40} /></div>;
+
+  if (!user || !profile.name) {
+    const sorted = [...crewList].sort((a,b) => (a.role==='manager'?-1:b.role==='manager'?1:a.role==='foreman'?-1:b.role==='foreman'?1:a.name.localeCompare(b.name)));
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4"><Card className="w-full max-w-md text-center space-y-6"><BrickWall className="w-12 h-12 text-orange-600 mx-auto"/><h1 className="text-2xl font-bold">MasonTrack Pro</h1>
+      {crewList.length===0 ? <div className="text-gray-400">Loading...</div> : 
+      <form onSubmit={handleLogin} className="text-left space-y-4"><Select label="Select Name" options={[{label:'Select...', value:''}, ...sorted.map(c=>({label:c.name, value:c.name}))]} value={loginName} onChange={e=>{setLoginName(e.target.value); setLoginError('');}} />
+      {loginName && <div className="animate-fade-in"><Input label="PIN" type="password" inputMode="numeric" pattern="[0-9]*" placeholder="****" maxLength={4} value={loginPin} onChange={handlePinEntry} />{loginError && <p className="text-red-600 text-xs">{loginError}</p>}</div>}
+      <Button type="submit" className="w-full" disabled={!loginName || loginPin.length < 4}>Login</Button></form>}
+      </Card></div>
+    );
   }
 
+  const greeting = (profile.name.includes('Mason') || profile.name.includes('Foreman') || profile.name.includes('Manager')) ? profile.name : profile.name.split(' ')[0];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-gray-800 font-sans pb-20 md:pb-0">
-      <div className={`w-full px-4 py-1 text-xs font-medium flex justify-center items-center gap-2 ${isOnline ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-white'}`}>
-        {isOnline ? <><Wifi size={12}/> {isSyncing ? 'Syncing...' : 'Online'}</> : <><WifiOff size={12}/> Offline</>}
-      </div>
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10 px-4 py-3 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-2">
-          <div className="bg-orange-600 text-white p-1.5 rounded-lg"><BrickWall size={20} /></div>
-          <div className="leading-tight"><h1 className="font-bold text-gray-900 text-lg">MasonTrack Pro</h1><p className="text-xs text-gray-500 capitalize">{profile.name} • {profile.role}</p></div>
-        </div>
-        <Button variant="ghost" onClick={handleLogout} className="text-xs p-2">Log Out</Button>
-      </header>
-
-      <main className="max-w-4xl mx-auto p-4 md:p-6">
-        {view === 'dashboard' && (
-           <div className="space-y-6 animate-fade-in">
-             <div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-2xl p-6 text-white shadow-lg relative">
-               <div className="flex justify-between items-start">
-                   <div>
-                        <h2 className="text-2xl font-bold mb-1">Hello, {getGreetingName()}</h2>
-                        <div className="flex items-center gap-2 opacity-90 mb-6 text-sm">
-                            <MessageSquare size={14} /> {motd}
-                            {profile.role === 'manager' && <button onClick={() => setView('edit_motd')} className="bg-white/20 p-1 rounded hover:bg-white/30 transition"><Pencil size={12}/></button>}
-                        </div>
-                   </div>
-                   <button onClick={() => setView('change_pin')} className="text-[10px] bg-white/20 hover:bg-white/30 px-2 py-1 rounded flex items-center gap-1 transition"><KeyRound size={12} /> My PIN</button>
-               </div>
-               <div className="flex flex-wrap gap-3">
-                 <button onClick={() => setView('log')} className="bg-white text-orange-600 px-5 py-2 rounded-lg font-bold shadow hover:bg-orange-50 flex gap-2 items-center"><Plus size={18} /> Log Work</button>
-                 <button onClick={() => setView('reports')} className="bg-orange-700 text-white border border-orange-400 px-5 py-2 rounded-lg hover:bg-orange-800 flex gap-2 items-center"><BarChart3 size={18} /> Stats</button>
-                 {profile.role === 'manager' && (
-                   <>
-                     <button onClick={() => setView('manage_crew')} className="bg-slate-800 text-white border border-slate-600 px-5 py-2 rounded-lg hover:bg-slate-900 flex gap-2 items-center"><Users size={18} /> Crew</button>
-                     <button onClick={() => setView('manage_jobs')} className="bg-slate-800 text-white border border-slate-600 px-5 py-2 rounded-lg hover:bg-slate-900 flex gap-2 items-center"><MapPin size={18} /> Jobs</button>
-                   </>
-                 )}
-               </div>
-             </div>
-           </div>
-        )}
+    <div className="min-h-screen bg-slate-50 font-sans pb-20">
+      <div className={`w-full px-4 py-1 text-xs flex justify-center gap-2 ${isOnline?'bg-emerald-600 text-white':'bg-slate-700 text-white'}`}>{isOnline?<><Wifi size={12}/> Online</>:<><WifiOff size={12}/> Offline</>}</div>
+      <header className="bg-white border-b p-3 flex justify-between items-center shadow-sm"><div className="flex items-center gap-2"><BrickWall className="text-orange-600"/><div className="font-bold text-lg">MasonTrack Pro</div></div><Button variant="ghost" onClick={handleLogout} className="text-xs">Log Out</Button></header>
+      <main className="max-w-4xl mx-auto p-4">
+        {view === 'dashboard' && <div className="space-y-6 animate-fade-in"><div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-2xl p-6 text-white shadow-lg">
+            <div className="flex justify-between"><h2 className="text-2xl font-bold">Hello, {greeting}</h2><button onClick={()=>setView('change_pin')} className="bg-white/20 px-2 py-1 rounded text-xs flex gap-1 items-center"><KeyRound size={12}/> PIN</button></div>
+            <div className="flex items-center gap-2 opacity-90 mb-6 text-sm"><MessageSquare size={14}/> {motd} {profile.role==='manager'&&<button onClick={()=>setView('edit_motd')}><Pencil size={12}/></button>}</div>
+            <div className="flex flex-wrap gap-3">
+                <button onClick={()=>setView('log')} className="bg-white text-orange-600 px-5 py-2 rounded-lg font-bold shadow flex gap-2 items-center"><Plus size={18}/> Log Work</button>
+                <button onClick={()=>setView('reports')} className="bg-orange-700 border border-orange-400 text-white px-5 py-2 rounded-lg flex gap-2 items-center"><BarChart3 size={18}/> Stats</button>
+                {profile.role==='manager' && <><button onClick={()=>setView('manage_crew')} className="bg-slate-800 border border-slate-600 text-white px-5 py-2 rounded-lg flex gap-2 items-center"><Users size={18}/> Crew</button><button onClick={()=>setView('manage_jobs')} className="bg-slate-800 border border-slate-600 text-white px-5 py-2 rounded-lg flex gap-2 items-center"><MapPin size={18}/> Jobs</button></>}
+            </div></div></div>}
         {view === 'log' && <LogEntryView />}
         {view === 'reports' && <ReportsView />}
         {view === 'manage_crew' && <ManageDataView type="crew" />}
@@ -1116,12 +840,7 @@ export default function MasonTrackPro() {
         {view === 'change_pin' && <ChangePinView />}
         {view === 'edit_motd' && <EditMotdView />}
       </main>
-
-      <nav className="fixed bottom-0 w-full bg-white border-t border-gray-200 md:hidden flex justify-around p-3 pb-safe z-50">
-        <button onClick={() => setView('dashboard')} className={`flex flex-col items-center text-xs ${view === 'dashboard' ? 'text-orange-600' : 'text-gray-400'}`}><LayoutDashboard size={24} /> Home</button>
-        <button onClick={() => setView('log')} className={`flex flex-col items-center text-xs ${view === 'log' ? 'text-orange-600' : 'text-gray-400'}`}><div className="bg-orange-600 rounded-full p-2 -mt-6 border-4 border-white"><Plus size={24} className="text-white" /></div>Log</button>
-        <button onClick={() => setView('reports')} className={`flex flex-col items-center text-xs ${view === 'reports' ? 'text-orange-600' : 'text-gray-400'}`}><BarChart3 size={24} /> Reports</button>
-      </nav>
+      <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around p-3 pb-safe"><button onClick={()=>setView('dashboard')} className={`flex flex-col items-center text-xs ${view==='dashboard'?'text-orange-600':'text-gray-400'}`}><LayoutDashboard size={24}/> Home</button><button onClick={()=>setView('log')} className={`flex flex-col items-center text-xs ${view==='log'?'text-orange-600':'text-gray-400'}`}><div className="bg-orange-600 rounded-full p-2 -mt-6 border-4 border-white"><Plus size={24} className="text-white"/></div>Log</button><button onClick={()=>setView('reports')} className={`flex flex-col items-center text-xs ${view==='reports'?'text-orange-600':'text-gray-400'}`}><BarChart3 size={24}/> Reports</button></nav>
     </div>
   );
 }
